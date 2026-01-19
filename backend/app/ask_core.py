@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os, time, json
-from google import genai
+import google.generativeai as genai
 from app.retrieval import search
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))

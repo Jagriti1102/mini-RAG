@@ -5,3 +5,4 @@ openai
 qdrant-client
 cohere
 tiktoken
+google-generativeai
