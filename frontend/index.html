@@ -1,0 +1,220 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>mini rag</title>
+  <style>
+    body { font-family: system-ui, Arial; max-width: 950px; margin: 40px auto; padding: 0 16px; }
+    textarea { width: 100%; padding: 12px; font-size: 15px; border: 1px solid #ddd; border-radius: 10px; }
+    #doc { height: 160px; }
+    #q { height: 80px; margin-top: 10px; }
+    button { padding: 10px 14px; font-size: 15px; cursor: pointer; border-radius: 10px; border: 1px solid #ddd; background: #fff; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .row { display: flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+    input, select { padding: 8px; font-size: 14px; border: 1px solid #ddd; border-radius: 10px; }
+    .card { margin-top: 18px; padding: 14px; border: 1px solid #ddd; border-radius: 12px; }
+    .muted { color: #666; font-size: 13px; }
+    pre { white-space: pre-wrap; word-wrap: break-word; margin: 0; }
+    .pill { display:inline-block; padding:4px 10px; border:1px solid #eee; border-radius:999px; }
+    .ok { color: #0a7a2f; }
+    .bad { color: #b00020; }
+    .label { font-weight: 600; margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+  <h1>Mini-RAG (Paste Text → Index → Ask)</h1>
+
+  <div class="muted">
+    Backend: <span id="base">http://127.0.0.1:8000</span>
+  </div>
+
+  <div class="card">
+    <div class="label">1) Paste document text</div>
+    <textarea id="doc" placeholder="Paste text here..."></textarea>
+
+    <div class="row">
+      <button id="indexbtn">Index Text</button>
+      <span class="pill muted" id="docidpill">doc_id: (not indexed)</span>
+      <span class="muted" id="indexstatus"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">2) Ask a question about that text</div>
+    <textarea id="q" placeholder="Ask something... e.g. summarise the document in 3 bullet points"></textarea>
+
+    <div class="row">
+      <button id="askbtn" disabled>Ask</button>
+
+      <label class="muted">Top K</label>
+      <input id="k" type="number" value="8" min="1" max="20" />
+
+      <label class="muted">Endpoint</label>
+      <select id="endpoint">
+        <option value="http://127.0.0.1:8000">local</option>
+      </select>
+
+      <span class="pill muted" id="timing"></span>
+      <span class="pill muted" id="tokens"></span>
+      <span class="pill muted" id="topscore"></span>
+    </div>
+
+    <div class="muted" id="askstatus" style="margin-top:10px;"></div>
+  </div>
+
+  <div class="card">
+    <h3>Answer (with citations)</h3>
+    <pre id="ans"></pre>
+  </div>
+
+  <div class="card">
+    <h3>Sources</h3>
+    <div id="src"></div>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  function esc(s){ return (s||"").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+  function setIndexStatus(msg, ok=true){
+    $("indexstatus").textContent = msg;
+    $("indexstatus").className = ok ? "muted ok" : "muted bad";
+  }
+
+  function setAskStatus(msg, ok=true){
+    $("askstatus").textContent = msg;
+    $("askstatus").className = ok ? "muted ok" : "muted bad";
+  }
+
+  let currentDocId = null;
+
+  async function indexText(){
+    const base = $("endpoint").value;
+    $("base").textContent = base;
+
+    const text = $("doc").value.trim();
+    if (!text){
+      setIndexStatus("Paste some text first.", false);
+      return;
+    }
+
+    $("indexbtn").disabled = true;
+    setIndexStatus("Indexing...", true);
+
+    try {
+      const res = await fetch(`${base}/index`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ text })
+      });
+
+      if (!res.ok){
+        const t = await res.text();
+        throw new Error(`HTTP ${res.status}: ${t}`);
+      }
+
+      const data = await res.json();
+      currentDocId = data.doc_id;
+
+      $("docidpill").textContent = `doc_id: ${currentDocId}`;
+      $("askbtn").disabled = false;
+      setIndexStatus(`Indexed successfully (chunks: ${data.chunks}).`, true);
+      setAskStatus("Now ask questions about your pasted text.", true);
+    } catch (e) {
+      setIndexStatus(e.message || "Index failed.", false);
+      currentDocId = null;
+      $("docidpill").textContent = "doc_id: (not indexed)";
+      $("askbtn").disabled = true;
+    } finally {
+      $("indexbtn").disabled = false;
+    }
+  }
+
+  async function ask(){
+    const base = $("endpoint").value;
+    $("base").textContent = base;
+
+    const query = $("q").value.trim();
+    const k = parseInt($("k").value || "8", 10);
+
+    if (!currentDocId){
+      setAskStatus("Index text first (doc_id missing).", false);
+      return;
+    }
+    if (!query){
+      setAskStatus("Type a question first.", false);
+      return;
+    }
+
+    $("ans").textContent = "";
+    $("src").innerHTML = "";
+    $("timing").textContent = "";
+    $("tokens").textContent = "";
+    $("topscore").textContent = "";
+
+    $("askbtn").disabled = true;
+    setAskStatus("Thinking...", true);
+
+    try {
+      const start = performance.now();
+      const res = await fetch(`${base}/ask`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ query, doc_id: currentDocId, k })
+      });
+      const end = performance.now();
+
+      if (!res.ok){
+        const t = await res.text();
+        throw new Error(`HTTP ${res.status}: ${t}`);
+      }
+
+      const data = await res.json();
+      setAskStatus("", true);
+
+      $("timing").textContent = `timing: ${data.timing_ms ?? Math.round(end-start)} ms`;
+      $("tokens").textContent = `tokens~: ${data.token_estimate ?? "-"}`;
+      $("topscore").textContent = `top score: ${typeof data.top_score === "number" ? data.top_score.toFixed(3) : "-"}`;
+
+      $("ans").textContent = data.answer || "";
+
+      const sources = data.sources || [];
+      if (sources.length === 0) {
+        $("src").innerHTML = "<div class='muted'>No sources returned (low confidence / no-answer).</div>";
+        return;
+      }
+
+      $("src").innerHTML = sources.map((s) => {
+        const score = (typeof s.score === "number") ? s.score.toFixed(3) : s.score;
+        return `
+          <div style="margin-bottom:12px;">
+            <div class="muted">[${s.ref}] score=${score}</div>
+            <div style="padding:10px;border:1px solid #eee;border-radius:10px;">
+              ${esc(s.text)}
+            </div>
+          </div>
+        `;
+      }).join("");
+    } catch (e) {
+      setAskStatus(e.message || "Failed to fetch.", false);
+    } finally {
+      $("askbtn").disabled = false;
+    }
+  }
+
+  $("indexbtn").addEventListener("click", indexText);
+  $("askbtn").addEventListener("click", ask);
+
+  $("q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) ask();
+  });
+
+  // helpful default
+  $("doc").value = `Artificial Intelligence is a field of computer science.
+Machine learning is a subset of AI.
+Large Language Models are trained on vast amounts of data.`;
+</script>
+</body>
+</html>
