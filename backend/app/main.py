@@ -1,8 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from app.ask_core import answer
-from app.index_text import index_pasted_text
 
 app = FastAPI()
 
@@ -28,8 +26,22 @@ def health():
 
 @app.post("/index")
 def index(req: IndexReq):
-    return index_pasted_text(req.text)
+    try:
+        from app.index_text import index_pasted_text
+        return index_pasted_text(req.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ask")
 def ask(req: AskReq):
-    return answer(req.query, doc_id=req.doc_id, k_retrieve=req.k, k_rerank=5, min_score=0.55)
+    try:
+        from app.ask_core import answer
+        return answer(
+            req.query,
+            doc_id=req.doc_id,
+            k_retrieve=req.k,
+            k_rerank=5,
+            min_score=0.55
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
